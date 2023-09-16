@@ -20,7 +20,7 @@ duplicates = {}  # Change this line to initialize duplicates as a dictionary
 deleted_items = []
 ip_address_pattern = r'\b(?:\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(?::\d{1,5})?)\b'
 tld_pattern = r'^(?:[a-zA-Z0-9-]+\.)+([a-zA-Z0-9-]+\.[a-zA-Z]+)(?::\d+)?$'
-
+  
 def add_https_to_uri(uri):
     if uri.startswith("http://"):
         return uri
@@ -84,13 +84,7 @@ def get_tld(netloc):
         return match.group(1)
     else:
         return None
-    
-def sort_uris(data):
-    uris = [item['uri'] for item in data]
-    sorted_uris = sorted(uris)
-    sorted_string = "|".join(sorted_uris)
-    return sorted_string
-    
+      
 items_copy = data['items'][:]
 
 for item in items_copy:
@@ -114,6 +108,7 @@ for item in items_copy:
         continue
 
     corrected_uris = []
+    uri_keys = []
     for uri_data in uris:
         uri = uri_data['uri']
         if (uri is None):
@@ -122,22 +117,25 @@ for item in items_copy:
         url = add_https_to_uri(uri)
         uri_parts = urlsplit(url)
         scheme, netloc, path, _, _ = uri_parts        
-        if netloc == '':
+        if not netloc:
             corrected_uris.append({"uri": uri})
+            uri_keys.append(uri)
             continue
 
         clean_uri = urlunsplit((scheme, netloc, path, '', ''))
         valid_uri = get_valid_url(clean_uri)
         if valid_uri is not None:
             corrected_uris.append({"uri": valid_uri})
+            uri_keys.append(netloc)
             continue
 
         tld = get_tld(netloc)
         clean_uri = urlunsplit((scheme, tld, path, '', ''))
         valid_uri = get_valid_url(clean_uri)
-        if valid_uri:
+        if valid_uri and tld:
             print(f"> Keeping item since TLD is still valid: {valid_uri}")
             corrected_uris.append({"uri": valid_uri})
+            uri_keys.append(tld)
         else:
             print(f"> TLD is invalid: {clean_uri}")
             
@@ -147,7 +145,7 @@ for item in items_copy:
         reason_for_deletion =  "all URIs are invalid"
     else:
       item['login']['uris'] = corrected_uris
-      item_key = f"{username}_{password}_{sort_uris(corrected_uris)}"
+      item_key = f"{username}_{password}_{'|'.join(sorted(uri_keys))}"
       if item_key in duplicates:
           reason_for_deletion = f"Duplicate of {duplicates[item_key]}"
       else:
