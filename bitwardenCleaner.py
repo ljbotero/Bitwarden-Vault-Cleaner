@@ -1,8 +1,8 @@
+from urllib.parse import urlsplit, urlunsplit  # Import the urlparse, urlsplit, and urlunsplit functions
 import json
-import os
+import re
 import ping3
-from urllib.parse import urlparse, urlsplit, urlunsplit  # Import the urlparse, urlsplit, and urlunsplit functions
-
+import requests
 
 # Constants for file names
 input_file_name = "bitwarden_export_file.json" # Replace this with your export file from Bitwarden
@@ -18,56 +18,88 @@ processed_items = 0
 total_items = len(data['items'])
 duplicates = {}  # Change this line to initialize duplicates as a dictionary
 deleted_items = []
-updated_items = []
+ip_address_pattern = r'\b(?:\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(?::\d{1,5})?)\b'
+tld_pattern = r'^(?:[a-zA-Z0-9-]+\.)+([a-zA-Z0-9-]+\.[a-zA-Z]+)(?::\d+)?$'
 
-# Function to check if a URL is reachable using ping
-def is_url_reachable(url):
+def add_https_to_uri(uri):
+    if uri.startswith("http://"):
+        return uri
+    elif uri.startswith("https://"):
+        return uri
+    else:
+        return "https://" + uri
+    
+def get_final_redirect_url(url):
     try:
-        # Ping the URL, wait for a response for 5 seconds
-        response_time = ping3.ping(url, timeout=5)
-        return response_time is not None
+        response = requests.head(url, allow_redirects=True, timeout=5)
+        return response.url
+    except requests.exceptions.RequestException as e:
+        print(f"Error: {e}")
+        return None
 
+def is_url_reachable(address):
+    try:
+        response_time = ping3.ping(address, timeout=5)
+        return response_time is None or response_time
+    
     except Exception as e:
-        print(f"Error while pinging URL: {url}, Error: {e}")
+        print(f"Error while pinging URL: {address}, Error: {e}")
         return False
+    
+def get_valid_url(uri):
+    if not uri:
+        return None
+    
+    uri = add_https_to_uri(uri)
+    uri_parts = urlsplit(uri)
+    scheme, netloc, path, _, _ = uri_parts
+    clean_uri = urlunsplit((scheme, netloc, path, '', ''))
+    
+    if netloc == '':
+        return uri
+    
+    print(f"> Processing: [{scheme}]:[{netloc}]:[{path}]")
 
-# Function to check if a URL is valid
-def is_valid_url(url):
-    try:
-        # Use urlsplit to parse the URL
-        parts = urlsplit(url)
+    if re.match(ip_address_pattern, netloc)  is not None:
+        print(f"> Matched IP Address for: {clean_uri}")
+        return clean_uri    
+    print(f"> Failed matching IP Address for: {netloc}")
+    
+    if is_url_reachable(netloc):
+        print(f"> Found reachable domain for: {clean_uri}")
+        return clean_uri
+    print(f"> Failed pinging: {netloc}")
 
-        # Check if the scheme and netloc (host) are not empty
-        if parts.scheme and parts.netloc:
-            return True
-        else:
-            return False
+    tld = urlunsplit((scheme, netloc, '', '', ''))
+    clean_uri = get_final_redirect_url(tld)
+    if clean_uri is not None: 
+        print(f"> Found reachable redirect for {tld} to {clean_uri}")
+        return clean_uri        
+    print(f"> Skipping unreachable URL for: {tld}")
+    return None
 
-    except Exception as e:
-        print(f"Error while checking URL validity: {url}, Error: {e}")
-        return False
+def get_tld(netloc):
+    match = re.search(tld_pattern, netloc)
+    if match:
+        return match.group(1)
+    else:
+        return None
+    
+def sort_uris(data):
+    uris = [item['uri'] for item in data]
+    sorted_uris = sorted(uris)
+    sorted_string = "|".join(sorted_uris)
+    return sorted_string
+    
+items_copy = data['items'][:]
 
-# Function to remove query parameters from a URL
-def remove_query_parameters(url):
-    try:
-        parts = urlsplit(url)
-        scheme, netloc, path, _, _ = parts
-        clean_url = urlunsplit((scheme, netloc, path, '', ''))
-        return clean_url
-    except Exception as e:
-        print(f"Error removing query parameters from URL: {url}, Error: {e}")
-        return url
-
-# ... (other parts of the script)
-
-# Iterate through the items and update URIs
-for item in data['items']:
+for item in items_copy:
     item_name = item['name']
     print(f"Processing item ({processed_items}/{total_items}): {item_name}")
 
     # Check if the item has a "login" field
     if 'login' not in item or not isinstance(item['login'], dict):
-        print(f"Skipping item: {item_name} as it does not have a 'login' field")
+        print("> Skipping item as it does not have a 'login' field")
         processed_items += 1
         continue
 
@@ -77,66 +109,54 @@ for item in data['items']:
 
     # Ensure uris, username, and password are not None
     if uris is None or username is None or password is None:
-        print(f"Skipping item: {item_name} as it has missing data")
+        print("> Skipping item as it has missing data")
         processed_items += 1
         continue
 
-    # Handle non-standard URIs separately
-    standard_uris = []
-    non_standard_uris = []
-
+    corrected_uris = []
     for uri_data in uris:
         uri = uri_data['uri']
-
-        # Remove query parameters from the URL
-        clean_uri = remove_query_parameters(uri)
-
-        if not is_valid_url(clean_uri):
-            print(f"Skipping invalid URL for item: {item_name}, URI: {clean_uri}")
-            non_standard_uris.append(uri_data)
+        if (uri is None):
             continue
 
-        # Check if the URI is "https://" or "http://"
-        if clean_uri in ["https://", "http://"]:
-            # If there's only one URI and it's "https://" or "http://", keep it
-            if len(uris) == 1:
-                standard_uris.append(uri_data)
+        url = add_https_to_uri(uri)
+        uri_parts = urlsplit(url)
+        scheme, netloc, path, _, _ = uri_parts        
+        if netloc == '':
+            corrected_uris.append({"uri": uri})
+            continue
+
+        clean_uri = urlunsplit((scheme, netloc, path, '', ''))
+        valid_uri = get_valid_url(clean_uri)
+        if valid_uri is not None:
+            corrected_uris.append({"uri": valid_uri})
+            continue
+
+        tld = get_tld(netloc)
+        clean_uri = urlunsplit((scheme, tld, path, '', ''))
+        valid_uri = get_valid_url(clean_uri)
+        if valid_uri:
+            print(f"> Keeping item since TLD is still valid: {valid_uri}")
+            corrected_uris.append({"uri": valid_uri})
         else:
-            standard_uris.append({"uri": clean_uri})  # Add the URI to standard_uris
+            print(f"> TLD is invalid: {clean_uri}")
+            
 
-    # If all URIs are "http://" or "https://", skip this item
-    if not standard_uris and not non_standard_uris:
-        print(f"Skipping item: {item_name} as all URIs are 'http://' or 'https://'")
-        processed_items += 1
-        continue
-
-    item['login']['uris'] = standard_uris
-
-    # Construct item_key based on standard URIs only
-    item_key = f"{username}_{password}_{','.join(sorted(uri_data['uri'] for uri_data in standard_uris))}"
-
-    if item_key in duplicates:
-        reason_for_deletion = f"Duplicate of {duplicates[item_key]}"
-        deleted_items.append({**item, "reasonForDeletion": reason_for_deletion})
-        print(f"Removing item: {item_name} as it's a duplicate of {duplicates[item_key]}")
+    reason_for_deletion = "";
+    if len(corrected_uris) == 0:
+        reason_for_deletion =  "all URIs are invalid"
     else:
-        duplicates[item_key] = item_name
+      item['login']['uris'] = corrected_uris
+      item_key = f"{username}_{password}_{sort_uris(corrected_uris)}"
+      if item_key in duplicates:
+          reason_for_deletion = f"Duplicate of {duplicates[item_key]}"
+      else:
+          duplicates[item_key] = item_name
 
-        # Check if any standard URI is reachable and not "https://" or "http://"
-        uris_valid = any(
-            is_url_reachable(uri_data['uri']) and not (uri_data['uri'] in ["https://", "http://"])
-            for uri_data in standard_uris
-        )
-
-        if uris_valid or not standard_uris:
-            updated_items.append(item)
-        else:
-            reason_for_deletion = "All standard URIs are invalid"
-            deleted_items.append({**item, "reasonForDeletion": reason_for_deletion})
-            print(f"Removing item: {item_name} because all standard URIs are invalid")
-
-    # Append non-standard URIs back to the item
-    item['login']['uris'] += non_standard_uris
+    if (reason_for_deletion):
+      print(f"> Removing item: {item_name} due to {reason_for_deletion}")
+      deleted_items.append({**item, "reasonForDeletion": reason_for_deletion})
+      data['items'].remove(item)
 
     # Save the data and deleted items in real-time
     with open(output_file_name, 'w') as output_file:
@@ -152,4 +172,4 @@ with open(output_file_name, 'w') as output_file:
     json.dump(data, output_file, indent=2)
 
 print(f"Processed {processed_items} items out of {total_items}.")
-print(f"Updated items: {len(updated_items)}, Deleted items: {len(deleted_items)}")
+print(f"Deleted items: {len(deleted_items)}")
