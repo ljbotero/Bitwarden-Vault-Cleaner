@@ -57,12 +57,12 @@ To use the Bitwarden Utility, follow these steps:
 
 1. Place your Bitwarden export JSON file in the project directory.
 
-2. Open the `bitwarden_cleaner.py` script and configure the file names and other settings according to your preferences.
+2. Open the `bitwardenCleaner.py` script and configure the file names and other settings according to your preferences.
 
 3. Run the script:
 
    ```bash
-   python bitwarden_cleaner.py
+   python bitwardenCleaner.py
    ```
 
 4. The script will process the input file and generate two output files: one with cleaned data and another with deleted items.
